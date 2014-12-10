@@ -52,17 +52,20 @@ else:
     ("roddenberry.freenode.net", 6667),
     ]
 
-    nick = "skype-}"
+    nick = "SkypeGateway"
     botname = "IRC ⟷  Skype".decode('UTF-8')
     password = None
     vhost = False
 
-    mirrors = {
-    '#test':
-    'iWwCuTwsjoIglPL3Fbmc_BM95EyK3683btIvrV_B2lQN4agJGCX7-REKzMl7-ruRqvo2RIgcOkQ',
-    }
+    mirrors = [
+            {
+            '#some-irc-channel',
+            'Xu4SrIzfxcScKxzooKaqnQmcdnKdm3n8AmSjrxmnuPykdronX2HFFwn7B2yL-MAUvISnLoD2fx6aFXPNbo3bJsJAOjumU5_uOU8CFyakSneQMnrljGypZ_aGiN6I6OS40eajIsSea7nhDLF3wA',
+            'NL0aHgMl6tP1O3flwrBCLO2jmaFtFIlW52Fg62ml6BGF3zRg6ejroDYfGb1yUlvg627ghkTwZdZvS6FgLiCGXWPDT32u0dfXZwFrTGkIBo6oxwRo0zjy-2oECB1Mb3bFuDiEWlnqo7qcxP4'
+            }
+    ]
 
-    colors = True
+    colors = False
 
 max_irc_msg_len = 442
 ping_interval = 2*60
@@ -79,13 +82,11 @@ name_start = "<".decode('UTF-8') # "◀"
 name_end = ">".decode('UTF-8') # "▶"
 emote_char = "*".decode('UTF-8') # "✱"
 
-muted_list_filename = nick + '.%s.muted'
-
 topics = ""
 
-usemap = {}
 bot = None
-mutedl = {}
+skypeChannels = {}
+blobs = {}
 lastsaid = {}
 edmsgs = {}
 
@@ -101,6 +102,9 @@ MINUTE = 60 * SECOND
 HOUR = 60 * MINUTE
 DAY = 24 * HOUR
 MONTH = 30 * DAY
+
+def isIrcChannel(channel):
+    return channel.startswith('#')
 
 def get_relative_time(dt, display_full = True):
     """Returns relative time compared to now from timestamp"""
@@ -168,40 +172,21 @@ def get_nick_decorated(nick):
     if colors:
         return get_nick_color(nick) + nick + '\017'
     else:
-        return "\x02" + nick + "\x02"
+        return nick #"\x02" + nick + "\x02"
 
-def load_mutes():
-    """Loads people who don't want to be broadcasted from IRC to Skype"""
-    for channel in mirrors.keys():
-        mutedl[channel] = []
-        try:
-            f = open(muted_list_filename % channel, 'r')
-            for line in f.readlines():
-                name = line.rstrip("\n")
-                mutedl[channel].append(name)
-                mutedl[channel].sort()
-            f.close()
-            print 'Loaded list of ' + str(len(mutedl[channel])) + ' mutes for ' + channel + '!'
-        except:
-            pass
-
-def save_mutes(channel):
-    """Saves people who don't want to be broadcasted from IRC to Skype"""
-    try:
-        f = open(muted_list_filename % channel, 'w')
-        for name in mutedl[channel]:
-            f.write(name + '\n')
-        mutedl[channel].sort()
-        f.close
-        print 'Saved ' + str(len(mutedl[channel])) + ' mutes for ' + channel + '!'
-    except:
-        pass
+def broadcast(text, sourceChannel):
+    for channelSet in mirrors:
+        if sourceChannel in channelSet:
+            for chan in channelSet - {sourceChannel}:
+                if isIrcChannel(chan):
+                    bot.say(chan, text)
+                else:
+                    skypeChannels[chan].SendMessage(text)
 
 def skype_says(chat, msg, edited = False):
     """Translate Skype messages to IRC"""
     raw = msg.Body
     msgtype = msg.Type
-    send = chat.SendMessage
     senderDisplay = msg.FromDisplayName
     senderHandle = msg.FromHandle
 
@@ -210,21 +195,22 @@ def skype_says(chat, msg, edited = False):
     else:
         edit_label = ""
     if msgtype == 'EMOTED':
-        bot.say(usemap[chat], emote_char + " " + get_nick_decorated(senderHandle) + edit_label + " " + raw)
+        broadcast(emote_char + " " + get_nick_decorated(senderHandle) + edit_label + " " + raw, chat)
     elif msgtype == 'SAID':
-        bot.say(usemap[chat], name_start + get_nick_decorated(senderHandle) + edit_label + name_end + " " + raw)
+        broadcast(name_start + get_nick_decorated(senderHandle) + edit_label + name_end + " " + raw, chat)
 
 def OnMessageStatus(Message, Status):
     """Skype message object listener"""
     chat = Message.Chat
 
     # Only react to defined chats
-    if chat in usemap:
+    if chat in blobs and blobs[chat] in skypeChannels:
         if Status == 'RECEIVED':
-            skype_says(chat, Message)
+            skype_says(blobs[chat], Message)
 
 def OnNotify(n):
     """Skype notification listener"""
+    print("skype notifcy: %s" % repr(n))
     params = n.split()
     if len(params) >= 4 and params[0] == "CHATMESSAGE":
         if params[2] == "EDITED_TIMESTAMP":
@@ -233,8 +219,8 @@ def OnNotify(n):
             msg = skype.Message(params[1])
             if msg:
                 chat = msg.Chat
-                if chat in usemap:
-                    skype_says(chat, msg, edited = True)
+                if chat in blobs and blobs[chat] in skypeChannels:
+                    skype_says(blobs[chat], msg, edited = True)
             del edmsgs[params[1]]
 
 def decode_irc(raw, preferred_encs = preferred_encodings):
@@ -321,7 +307,7 @@ class MirrorBot(SingleServerIRCBot):
                         lastsaid[target] = 0
                     while time.time()-lastsaid[target] < delay_btw_msgs:
                         time.sleep(0.2)
-                    lastsaid[target]=time.time()
+                    lastsaid[target] = time.time()
                     if do_say:
                         self.connection.privmsg(target, irc_msg)
                     else:
@@ -337,7 +323,7 @@ class MirrorBot(SingleServerIRCBot):
         self.say(self, target, msg, False)
 
     def on_welcome(self, connection, event):
-        """Do stuff when when welcomed to server"""
+        """Do stuff when welcomed to server"""
         print "Connected to", self.connection.get_server_name()
         if password is not None:
             bot.say("NickServ", "identify " + password)
@@ -346,9 +332,11 @@ class MirrorBot(SingleServerIRCBot):
         # ensure handler is present exactly once by removing it before adding
         self.connection.remove_global_handler("ctcp", self.handle_ctcp)            
         self.connection.add_global_handler("ctcp", self.handle_ctcp)
-        for pair in mirrors:
-            connection.join(pair)
-            print "Joined " + pair
+        for channelSet in mirrors:
+            for channel in channelSet:
+                if isIrcChannel(channel):
+                    connection.join(channel)
+                    print "Joined " + channel
         self.routine_ping(first_run = True)
 
     def on_pubmsg(self, connection, event):
@@ -357,104 +345,19 @@ class MirrorBot(SingleServerIRCBot):
         source = event.source().split('!')[0]
         target = event.target().lower()
         cmds = args[0].split()
-        if cmds and cmds[0].rstrip(":,") == nick:
-            if len(cmds)==2:
-                if cmds[1].upper() == 'ON' and source in mutedl[target]:
-                    mutedl[target].remove(source)
-                    save_mutes(target)
-                elif cmds[1].upper() == 'OFF' and source not in mutedl[target]:
-                    mutedl[target].append(source)
-                    save_mutes(target)
-            return
-        if source in mutedl[target]:
-            return
         msg = name_start + source + name_end + " "
         for raw in args:
             msg += decode_irc(raw) + "\n"
-        msg = msg.rstrip("\n")
-        print cut_title(usemap[target].FriendlyName), msg
-        usemap[target].SendMessage(msg)
+        broadcast(msg.rstrip("\n"), target)
 
     def handle_ctcp(self, connection, event):
         """Handle CTCP events for emoting"""
         args = event.arguments()
         source = event.source().split('!')[0]
         target = event.target().lower()
-        if target in mirrors.keys():
-            if source in mutedl[target]:
-                return
-        if target in usemap and args[0]=='ACTION' and len(args) == 2:
+        if args[0] == 'ACTION' and len(args) == 2:
             # An emote/action message has been sent to us
-            msg = emote_char + " " + source + " " + decode_irc(args[1]) + "\n"
-            print cut_title(usemap[target].FriendlyName), msg
-            usemap[target].SendMessage(msg)
-
-    def on_privmsg(self, connection, event):
-        """React to ON, OF(F), ST(ATUS), IN(FO) etc for switching gateway (from IRC side only)"""
-        source = event.source().split('!')[0]
-        raw = event.arguments()[0].decode('utf-8', 'ignore')
-        args = raw.split()
-        if not args:
-            return
-        two = args[0][:2].upper()
-        
-        if two == 'ST': # STATUS
-            muteds = []
-            brdcsts = []
-            for channel in mirrors.keys():
-                if source in mutedl[channel]:
-                    muteds.append(channel)
-                else:
-                    brdcsts.append(channel)
-            if len(brdcsts) > 0:
-                bot.say(source, "You're mirrored to Skype from " + ", ".join(brdcsts))
-            if len(muteds) > 0:
-                bot.say(source, "You're silent to Skype on " + ", ".join(muteds))
-                
-        if two == 'OF': # OFF
-            for channel in mirrors.keys():
-                if source not in mutedl[channel]:
-                    mutedl[channel].append(source)
-                    save_mutes(channel)
-            bot.say(source, "You're silent to Skype now")
-                
-        elif two == 'ON': # ON
-            for channel in mirrors.keys():
-                if source in mutedl[channel]:
-                    mutedl[channel].remove(source)
-                    save_mutes(channel)
-            bot.say(source, "You're mirrored to Skype now")
-                
-        elif two == 'IN' and len(args) > 1 and args[1] in mirrors: # INFO
-            chat = usemap[args[1]]
-            members = chat.Members
-            active = chat.ActiveMembers
-            msg = args[1] + " ⟷  \"".decode("UTF-8") + chat.FriendlyName + "\" (%d/%d)\n" % (len(active), len(members))
-            # msg += chat.Blob + "\n"
-            userList = []
-            for user in members:
-                if user in active:
-                    desc = " * " + user.Handle + " [" + user.FullName
-                else:
-                    desc = " - " + user.Handle + " [" + user.FullName
-                #print user.LastOnlineDatetime
-                last_online = user.LastOnline
-                timestr = ""
-                if last_online > 0:
-                    timestr += " --- " + get_relative_time(datetime.datetime.fromtimestamp(last_online))
-                mood = user.MoodText
-                if len(mood) > 0:
-                    desc += ": \"" + mood + "\""
-                desc += "]" + timestr
-                userList.append(desc)
-                userList.sort()
-            for desc in userList:
-                 msg += desc + '\n'
-            msg = msg.rstrip("\n")
-            bot.say(source, msg)
-            
-        elif two in ('?', 'HE', 'HI', 'WT'): # HELP
-            bot.say(source, botname + " " + version + " " + topics + "\n * ON/OFF/STATUS --- Trigger mirroring to Skype\n * INFO #channel --- Display list of users from relevant Skype chat\nDetails: https://github.com/boamaod/skype2irc#readme")
+            broadcast(emote_char + " " + source + " " + decode_irc(args[1]) + "\n", target)
 
 # *** Start everything up! ***
 
@@ -493,16 +396,17 @@ except:
 print 'Skype API initialised.'
 
 topics = "["
-for pair in mirrors:
-    chat = skype.CreateChatUsingBlob(mirrors[pair])
-    topic = chat.FriendlyName
-    print "Joined \"" + topic + "\""
-    topics += cut_title(topic) + "|"
-    usemap[pair] = chat
-    usemap[chat] = pair
+for channelSet in mirrors:
+    for channel in channelSet:
+        if isIrcChannel(channel): continue
+        print channel
+        chat = skype.FindChatUsingBlob(channel)
+        topic = chat.FriendlyName
+        print "Joined \"" + topic + "\""
+        topics += cut_title(topic) + "|"
+        skypeChannels[channel] = chat
+        blobs[chat] = channel
 topics = topics.rstrip("|") + "]"
-
-load_mutes()
 
 bot = MirrorBot()
 print "Starting IRC bot..."
